@@ -71,7 +71,7 @@ jobs:
 
 
   build_project_and_sonar_scan:
-    runs-on: self-hosted   # ✅ FIX (IMPORTANT)
+    runs-on: ubuntu-latest   # ✅ FIX (IMPORTANT)
     needs: test
 
     steps:
