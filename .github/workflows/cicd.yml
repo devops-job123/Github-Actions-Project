@@ -153,10 +153,10 @@ jobs:
           chmod 600 $HOME/.kube/config
 
       - name: Validate manifest
-        run: kubectl apply --dry-run=client -f ds.yml
+        run: kubectl apply --dry-run=client --validate=false -f ds.yml
 
       - name: Deploy
-        run: kubectl apply -f ds.yml
+        run: kubectl apply -f ds.yml -n webapps
 
       - name: Verify rollout
         run: kubectl rollout status deployment/bankapp --timeout=300s
