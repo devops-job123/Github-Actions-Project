@@ -1,48 +1,125 @@
 ---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webapps
+
+---
+# MySQL Secret (NO hardcoded passwords)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-secret
+  namespace: webapps
+type: Opaque
+stringData:
+  MYSQL_ROOT_PASSWORD: Test@123
+  MYSQL_DATABASE: bankappdb
+
+---
+# MySQL PVC (persistent storage)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+  namespace: webapps
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
 # MySQL Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mysql
+  namespace: webapps
 spec:
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: mysql
-  strategy:
-    type: Recreate
   template:
     metadata:
       labels:
         app: mysql
     spec:
       containers:
-      - image: mysql:8
-        name: mysql
-        env:
-        - name: MYSQL_ROOT_PASSWORD
-          value: "Test@123"
-        - name: MYSQL_DATABASE
-          value: "bankappdb"
-        ports:
-        - containerPort: 3306
-          name: mysql
+        - name: mysql
+          image: mysql:8
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_DATABASE
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+          livenessProbe:
+            exec:
+              command:
+                - mysqladmin
+                - ping
+                - -h
+                - 127.0.0.1
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - mysqladmin
+                - ping
+                - -h
+                - 127.0.0.1
+            initialDelaySeconds: 20
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: mysql-data
+          persistentVolumeClaim:
+            claimName: mysql-pvc
+
 ---
 # MySQL Service
 apiVersion: v1
 kind: Service
 metadata:
   name: mysql-service
+  namespace: webapps
 spec:
   ports:
-  - port: 3306
+    - port: 3306
+      targetPort: 3306
   selector:
     app: mysql
+
 ---
-# Java Application Deployment
+# BankApp Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bankapp
+  namespace: webapps
 spec:
   replicas: 1
   selector:
@@ -53,28 +130,63 @@ spec:
       labels:
         app: bankapp
     spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox
+          command:
+            - sh
+            - -c
+            - >
+              until nc -z mysql-service 3306;
+              do echo waiting for mysql; sleep 2; done;
+
       containers:
-      - name: bankapp
-        image: adijaiswal/bankapp:latest
-        ports:
-        - containerPort: 8080
-        env:
-        - name: SPRING_DATASOURCE_URL
-          value: jdbc:mysql://mysql-service:3306/bankappdb?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
-        - name: SPRING_DATASOURCE_USERNAME
-          value: root
-        - name: SPRING_DATASOURCE_PASSWORD
-          value: Test@123
+        - name: bankapp
+          image: adijaiswal/bankapp:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:mysql://mysql-service:3306/bankappdb?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+            - name: SPRING_DATASOURCE_USERNAME
+              value: root
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
 ---
-# Bank Application Service
+# BankApp Service (NodePort for kubeadm)
 apiVersion: v1
 kind: Service
 metadata:
   name: bankapp-service
+  namespace: webapps
 spec:
-  type: LoadBalancer
-  ports:
-  - port: 80
-    targetPort: 8080
+  type: NodePort
   selector:
     app: bankapp
+  ports:
+    - port: 80
+      targetPort: 8080
+      nodePort: 30080
